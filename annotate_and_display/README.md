@@ -1,7 +1,7 @@
 ## ui.py – Annotation interactive et génération de données
 
 ```mermaid
-flowchart LR
+graph TD
     A[Chargement du document] --> B[OCR combiné<br/>(EasyOCR, Tesseract, Docling)]
     B --> C[Interface web Flask<br/>pour sélectionner des bboxes]
     C --> D[Sélection manuelle des bbox<br/>et choix de labels]

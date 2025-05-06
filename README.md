@@ -32,7 +32,7 @@ Deux grandes catégories de modèles s’affrontent sur ces tâches :
 
 ## Workflow de l’outil
 ```mermaid
-flowchart LR
+graph TD
   A[Annotate_and_display] --> B[ui.py]
   B --> C[layoutlmv3_ft.py]
   C --> D[Annotate_and_display (inférence)]
