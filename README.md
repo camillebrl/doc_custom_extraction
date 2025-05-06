@@ -33,9 +33,8 @@ Deux grandes catégories de modèles s’affrontent sur ces tâches :
 ## Workflow de l’outil
 ```mermaid
 flowchart TD
-  A["Annotate and display"] --> B["ui.py"]
-  B --> C["layoutlmv3_ft.py"]
-  C --> D["Annotate and display (inférence)"]
+  A["annotate_and_display/ui.py"] --> B["Layoutlmv3_ft/layoutlmv3_ft.py"]
+  B --> C["annotate_and_display/inference.py"]
 ```
 
 ### 1. Annotate_and_display : préparation et annotation manuelle

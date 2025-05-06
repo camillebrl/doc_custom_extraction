@@ -1,0 +1,1 @@
+Code pour le fine-tuning de microsoft/layoutlmv3-base sur la tâche de KIE.

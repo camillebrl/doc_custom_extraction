@@ -1,14 +1,14 @@
 ## ui.py – Annotation interactive et génération de données
 
 ```mermaid
-graph TD
-    A[Chargement du document] --> B[OCR combiné<br/>(EasyOCR, Tesseract, Docling)]
-    B --> C[Interface web Flask<br/>pour sélectionner des bboxes]
-    C --> D[Sélection manuelle des bbox<br/>et choix de labels]
-    D --> E[Enregistrement des annotations<br/>temp_annot.jsonl]
-    E --> F[Génération automatique d’augmentations<br/>(contraste, bruit, rotation…)]
-    F --> G[Re-OCR sur images augmentées]
-    G --> H[Ré-ajustement des bbox et sauvegarde JSONL]
+flowchart TD
+  A["Chargement du document"] --> B["OCR combiné<br/>(EasyOCR, Tesseract, Docling)"]
+  B --> C["Interface web Flask<br/>pour sélectionner des bboxes"]
+  C --> D["Sélection manuelle des bbox<br/>et choix de labels"]
+  D --> E["Enregistrement des annotations<br/>temp_annot.jsonl"]
+  E --> F["Génération automatique d’augmentations<br/>(contraste, bruit, rotation…)"]
+  F --> G["Re-OCR sur images augmentées"]
+  G --> H["Ré-ajustement des bbox et sauvegarde JSONL"]
 ```
 
 Dans **ui.py**, on propose une application Flask permettant d’annoter **manuellement** des données visuelles en **sélectionnant** directement les bounding boxes détectées par OCR et en choisissant **librement** les labels (totalement customisables) :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}.
