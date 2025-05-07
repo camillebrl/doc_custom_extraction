@@ -1,21 +1,21 @@
-import os
-import json
-import numpy as np
-import torch
-import cv2
-import pytesseract
-from PIL import Image as PILImage
-from transformers import LayoutLMv3Processor, LayoutLMv3ForTokenClassification
-from docling.document_converter import DocumentConverter
-import matplotlib
-matplotlib.use('Agg')  # Utiliser le backend non interactif
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-import io
 import base64
-from flask import Flask, render_template, request, redirect, url_for, jsonify, send_file
-import easyocr
-import Levenshtein
+import io
+import json
+import os
+from typing import Any, Dict, List
+
+import cv2
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import pytesseract
+import torch
+from flask import Flask, jsonify, render_template, request
+from matplotlib.patches import Rectangle
+from PIL import Image as PILImage
+from transformers import LayoutLMv3ForTokenClassification, LayoutLMv3Processor
+
+matplotlib.use('Agg') 
 
 app = Flask(__name__)
 
@@ -25,9 +25,6 @@ RESULTS_FOLDER = 'results'
 MODEL_PATH = '../layoutlmv3_ft/results/final_model'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULTS_FOLDER, exist_ok=True)
-
-# Initialize EasyOCR reader
-reader = easyocr.Reader(['en'])
 
 # Initialisation du modèle
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -51,284 +48,433 @@ print("Modèle chargé avec succès!")
 COLOR_MAP = {
     "PATIENT": "yellow",
     "DOCTOR": "blue",
-    "DATE": "green",
-    "TYPE": "green",
-    "MEDECINE": "green"
+    "FACILITY": "purple",
+    "ACT": "green",
+    "DOC": "orange"
 }
 
-def enhance_image_for_ocr(image_path):
+def convert_nested_numpy_types(obj):
+    """Recursively convert numpy types in nested data structures to Python types."""
+    if isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_nested_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_nested_numpy_types(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_nested_numpy_types(item) for item in obj)
+    return obj
+
+def detect_image_blocks(image, gradient_thresh=6000, min_size=10, smooth=1, recursive=False, depth=0, max_depth=2):
+    """Détecte les blocs d'image en utilisant l'analyse de gradient
+    et retourne les coordonnées des blocs plutôt que des sous-images.
+    
+    Args:
+        image: Image d'entrée (BGR)
+        gradient_thresh: Seuil pour la détection de gradient
+        min_size: Taille minimale d'un bloc vide
+        smooth: Marge pour adoucir les limites
+        recursive: Si True, applique récursivement l'algorithme sur chaque bloc
+        depth: Profondeur actuelle de récursion
+        max_depth: Profondeur maximale de récursion
+    
+    Returns:
+        Liste de tuples (x, y, w, h) représentant les coordonnées des blocs
+    """  # noqa: D205
+    # Obtenir les dimensions de l'image
+    h, w = image.shape[:2]
+    
+    # Convertir en niveaux de gris
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Calculer les gradients
+    gradient_x = cv2.Sobel(gray, cv2.CV_16S, 1, 0)
+    gradient_y = cv2.Sobel(gray, cv2.CV_16S, 0, 1)
+    gradient_x = np.abs(gradient_x)
+    gradient_y = np.abs(gradient_y)
+    gradient = np.maximum(gradient_x, gradient_y)
+    gradient[gradient < 50] = 0  # Supprimer le bruit de fond
+    
+    # Calculer les projections de gradient
+    h_projection = np.sum(gradient, axis=0)  # Projection horizontale
+    v_projection = np.sum(gradient, axis=1)  # Projection verticale
+    
+    # Trouver les séparations horizontales et verticales
+    h_separations = find_separations(h_projection, gradient_thresh, min_size, smooth)
+    v_separations = find_separations(v_projection, gradient_thresh, min_size, smooth)
+    
+    # Si aucune séparation n'est trouvée, retourner l'image entière
+    if h_separations is None or v_separations is None:
+        return [(0, 0, w, h)]
+    
+    # Convertir les séparations en régions
+    h_regions = separations_to_regions(h_separations, w)
+    v_regions = separations_to_regions(v_separations, h)
+    
+    # Créer la liste des coordonnées des blocs
+    blocks = []
+    for y_start, y_end in v_regions:
+        for x_start, x_end in h_regions:
+            # Vérifier que le bloc a une taille significative
+            if (x_end - x_start) > 5 and (y_end - y_start) > 5:
+                # Si récursif et pas atteint la profondeur maximale
+                if recursive and depth < max_depth:
+                    # Extraire le bloc pour l'analyse récursive
+                    sub_image = image[y_start:y_end, x_start:x_end]
+                    
+                    # Adapter le seuil en fonction de la taille du bloc
+                    sub_thresh = gradient_thresh * (sub_image.shape[0] * sub_image.shape[1]) / (h * w)
+                    
+                    # Détecter les sous-blocs
+                    sub_blocks = detect_image_blocks(
+                        sub_image, gradient_thresh=sub_thresh, 
+                        min_size=min_size, smooth=smooth,
+                        recursive=recursive, depth=depth+1, max_depth=max_depth
+                    )
+                    
+                    # Si aucun sous-bloc n'est trouvé ou un seul qui couvre tout
+                    if len(sub_blocks) == 1 and sub_blocks[0] == (0, 0, sub_image.shape[1], sub_image.shape[0]):
+                        blocks.append((x_start, y_start, x_end - x_start, y_end - y_start))
+                    else:
+                        # Ajuster les coordonnées des sous-blocs par rapport à l'image d'origine
+                        for sx, sy, sw, sh in sub_blocks:
+                            blocks.append((x_start + sx, y_start + sy, sw, sh))
+                else:
+                    blocks.append((x_start, y_start, x_end - x_start, y_end - y_start))
+    
+    return blocks
+
+def find_separations(projection, threshold, min_size=10, smooth=1):
+    """Trouve les séparations dans une projection de gradient.
+    
+    Args:
+        projection: Projection du gradient (somme par ligne ou colonne)
+        threshold: Seuil pour considérer une valeur comme significative
+        min_size: Taille minimale d'une séparation
+        smooth: Marge pour adoucir les limites
+    
+    Returns:
+        Liste de séparations [début, fin]
     """
-    Améliore l'image pour faciliter l'OCR en ajoutant du contraste et en réduisant le flou
-    """
-    # Lire l'image
-    img = cv2.imread(image_path)
-    if img is None:
+    # Trouver les indices où la projection dépasse le seuil
+    indices = np.where(projection > threshold)[0]
+    
+    if len(indices) == 0:
         return None
     
-    # Convertir en niveaux de gris si l'image est en couleur
-    if len(img.shape) == 3:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Initialiser la liste des séparations
+    separations = []
+    
+    # Ajouter le début si nécessaire
+    if indices[0] > min_size:
+        start = 0
+        end = max(0, indices[0] - smooth)
+        separations.append([start, end])
+    
+    # Trouver les blocs vides entre les zones d'intérêt
+    for i in range(len(indices) - 1):
+        if indices[i + 1] - indices[i] > min_size:
+            start = min(len(projection), indices[i] + smooth)
+            end = max(0, indices[i + 1] - smooth)
+            if start < end:
+                separations.append([start, end])
+    
+    # Ajouter la fin si nécessaire
+    if len(projection) - indices[-1] > min_size:
+        start = min(len(projection), indices[-1] + smooth)
+        end = len(projection)
+        separations.append([start, end])
+    
+    return separations
+
+def separations_to_regions(separations, size):
+    """Convertit les séparations en régions.
+    
+    Args:
+        separations: Liste de séparations [début, fin]
+        size: Taille totale (largeur ou hauteur)
+    
+    Returns:
+        Liste de régions [début, fin]
+    """
+    regions = []
+    
+    # Cas particulier: aucune séparation
+    if len(separations) == 0:
+        regions.append([0, size])
+        return regions
+    
+    # Premier bloc si nécessaire
+    if separations[0][0] > 0:
+        regions.append([0, separations[0][0]])
+    
+    # Blocs intermédiaires
+    for i in range(len(separations) - 1):
+        regions.append([separations[i][1], separations[i + 1][0]])
+    
+    # Dernier bloc si nécessaire
+    if separations[-1][1] < size:
+        regions.append([separations[-1][1], size])
+    
+    return regions
+
+def upscale_image(image, scale_factor=2.0, method='lanczos4'):
+    """Redimensionne une image avec une méthode optimisée pour le texte et les détails.
+    
+    Args:
+        image: Image à redimensionner
+        scale_factor: Facteur d'agrandissement
+        method: Méthode d'interpolation ('nearest', 'linear', 'cubic', 'lanczos4', 'waifu2x')
+    
+    Returns:
+        Image redimensionnée
+    """
+    h, w = image.shape[:2]
+    new_h, new_w = int(h * scale_factor), int(w * scale_factor)
+    
+    if method == 'nearest':
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+    elif method == 'linear':
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    elif method == 'cubic':
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+    elif method == 'lanczos4':
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
     else:
-        gray = img
+        # Méthode par défaut pour le texte (Lanczos)
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
     
-    # Amélioration du contraste par égalisation d'histogramme adaptative
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
+    # Amélioration supplémentaire pour le texte (optionnelle)
+    if method == 'text_enhance':
+        # Conversion en niveaux de gris
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        
+        # Amélioration du contraste
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        
+        # Reconversion en couleur
+        enhanced_color = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+        
+        # Blend avec l'original pour conserver de la couleur
+        alpha = 0.7
+        resized = cv2.addWeighted(resized, alpha, enhanced_color, 1-alpha, 0)
     
-    # Débruitage
-    denoised = cv2.fastNlMeansDenoising(enhanced, None, h=10, searchWindowSize=21, templateWindowSize=7)
-    
-    # Binarisation adaptative pour améliorer la détection du texte
-    binary = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                 cv2.THRESH_BINARY, 11, 2)
-    
-    # Créer un nom pour l'image améliorée
-    enhanced_path = os.path.join(UPLOAD_FOLDER, f"enhanced_{os.path.basename(image_path)}")
-    
-    # Sauvegarder l'image améliorée
-    cv2.imwrite(enhanced_path, binary)
-    
-    return enhanced_path
+    return resized
 
-def extract_text_with_easyocr(image_path):
-    """
-    Extraire le texte et les bounding boxes d'une image en utilisant EasyOCR
-    """
-    try:
-        # Améliorer l'image avant OCR
-        enhanced_image_path = enhance_image_for_ocr(image_path)
-        if enhanced_image_path is None:
-            return {"words": [], "bboxes": [], "confidences": []}
-        
-        # Charger l'image avec PIL pour obtenir les dimensions
-        img = PILImage.open(enhanced_image_path)
-        image_height = img.height  # Obtenir la hauteur de l'image pour l'inversion des coordonnées
-        
-        # Utiliser EasyOCR pour extraire le texte
-        results = reader.readtext(enhanced_image_path)
-        
-        extracted_data = {
-            "words": [],
-            "bboxes": [],
-            "confidences": []
-        }
-        
-        # Parcourir les résultats détectés
-        for result in results:
-            bbox = result[0]  # EasyOCR retourne 4 points (polygone)
-            text = result[1]   # Le texte reconnu
-            confidence = result[2]  # Score de confiance
-            
-            if not text.strip():
-                continue
-            
-            # Convertir les 4 points du polygone en rectangle (x1,y1,x2,y2)
-            # Prendre les coordonnées min et max pour obtenir le rectangle englobant
-            x_coords = [p[0] for p in bbox]
-            y_coords = [p[1] for p in bbox]
-            
-            x1 = min(x_coords)
-            y1 = min(y_coords)
-            x2 = max(x_coords)
-            y2 = max(y_coords)
-            
-            # Créer la bbox au format x1,y1,x2,y2 avec les coordonnées Y inversées
-            # pour correspondre au système de coordonnées attendu (0,0 en bas à gauche)
-            bbox_tuple = (int(x1), image_height - int(y2), int(x2), image_height - int(y1))
-            
-            # Ajouter à nos données
-            extracted_data["words"].append(text)
-            extracted_data["bboxes"].append(bbox_tuple)
-            extracted_data["confidences"].append(confidence)
-        
-        return extracted_data
+def sharpen_image(image):
+    """Applique un filtre de netteté à l'image pour améliorer la lisibilité du texte.
     
-    except Exception as e:
-        print(f"Erreur lors de l'extraction avec EasyOCR: {e}")
-        import traceback
-        traceback.print_exc()
+    Args:
+        image: Image à améliorer
+    
+    Returns:
+        Image améliorée
+    """
+    # Création du kernel de netteté
+    kernel = np.array([[-1, -1, -1],
+                       [-1,  9, -1],
+                       [-1, -1, -1]])
+    
+    # Application du filtre
+    sharpened = cv2.filter2D(image, -1, kernel)
+    
+    return sharpened
+
+def extract_and_upscale_blocks(image_path, output_dir="output_blocks", max_depth=2, scale_factor=2.0, 
+                              upscale_method='lanczos4', sharpen=True, save_quality=95):
+    """Détecte, extrait, redimensionne et sauvegarde les blocs d'une image avec une haute qualité.
+    
+    Args:
+        image_path: Chemin vers l'image d'entrée
+        output_dir: Dossier de sortie pour les sous-images
+        max_depth: Profondeur maximale de récursion
+        scale_factor: Facteur d'agrandissement
+        upscale_method: Méthode de redimensionnement
+        sharpen: Si True, applique un filtre de netteté
+        save_quality: Qualité de sauvegarde (0-100) pour les images JPEG
+    """
+    # Créer le dossier de sortie s'il n'existe pas
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    # Charger l'image
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"Erreur: Impossible de charger l'image {image_path}")
+        return
+    
+    # Adapter le seuil en fonction de la taille de l'image
+    thresh = adaptive_threshold(image)
+    
+    # Détecter les blocs avec récursion
+    blocks = detect_image_blocks(
+        image, gradient_thresh=thresh, min_size=10, smooth=1,
+        recursive=True, depth=0, max_depth=max_depth
+    )
+    
+    # Sauvegarder les blocs avec haute qualité et redimensionnement
+    blocks_paths = []
+    for i, (x, y, w, h) in enumerate(blocks):
+        # Extraire le bloc directement de l'image originale
+        block_img = image[y:y+h, x:x+w]
+        
+        # Redimensionner le bloc
+        upscaled_img = upscale_image(block_img, scale_factor, upscale_method)
+        
+        # Appliquer un filtre de netteté si demandé
+        if sharpen:
+            upscaled_img = sharpen_image(upscaled_img)
+        
+        # Déterminer le format de sortie
+        _, ext = os.path.splitext(image_path)
+        if ext.lower() in ['.jpg', '.jpeg']:
+            # Pour JPEG, utiliser la qualité spécifiée
+            output_path = os.path.join(output_dir, f"bloc_{i+1}_upscaled.jpg")
+            cv2.imwrite(output_path, upscaled_img, [cv2.IMWRITE_JPEG_QUALITY, save_quality])
+        elif ext.lower() == '.png':
+            # Pour PNG, utiliser la compression maximale
+            output_path = os.path.join(output_dir, f"bloc_{i+1}_upscaled.png")
+            cv2.imwrite(output_path, upscaled_img, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+        else:
+            # Pour les autres formats, utiliser PNG sans perte
+            output_path = os.path.join(output_dir, f"bloc_{i+1}_upscaled.png")
+            cv2.imwrite(output_path, upscaled_img)
+
+        blocks_paths.append(output_path)
+    
+    print(f"{len(blocks)} blocs ont été détectés, agrandis par un facteur {scale_factor} "
+          f"avec la méthode '{upscale_method}' et sauvegardés dans le dossier {output_dir}")
+
+    return blocks, blocks_paths
+
+def adaptive_threshold(image, initial_thresh=6000, min_size=10):
+    """Détermine automatiquement le seuil optimal pour la détection des blocs.
+    
+    Args:
+        image: Image d'entrée
+        initial_thresh: Seuil initial
+        min_size: Taille minimale d'un bloc
+    
+    Returns:
+        Seuil adapté
+    """
+    h, w = image.shape[:2]
+    area = h * w
+    
+    # Adapter le seuil en fonction de la taille de l'image
+    if area > 1000000:  # Grande image (> 1MP)
+        return initial_thresh * 2
+    elif area < 100000:  # Petite image (< 0.1MP)
+        return initial_thresh / 2
+    else:
+        return initial_thresh
+
+def process_image_with_block_ocr(image_path: str, output_dir: str = "output_blocks", 
+                               tesseract_config: str = r'--oem 3 --psm 6 -l fra') -> Dict:
+    """Découpe une image en blocs, applique l'OCR sur chaque bloc,
+    et combine les résultats en les ramenant aux coordonnées de l'image originale.
+    """
+    # Créer le dossier de sortie s'il n'existe pas
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    # Charger l'image
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"Erreur: Impossible de charger l'image {image_path}")
         return {"words": [], "bboxes": [], "confidences": []}
+    
+    # Dimensions de l'image originale
+    image_height, image_width = image.shape[:2]
+    
+    # Détecter les blocs avec récursion
+    blocks, blocks_paths = extract_and_upscale_blocks(image_path, 
+        scale_factor=3.0,  # Facteur d'agrandissement (3x)
+        upscale_method='lanczos4',  # Méthode optimisée pour le texte
+        sharpen=True,  # Appliquer un filtre de netteté
+        save_quality=100  # Qualité maximale pour JPEG
+    )
+    
+    # Initialiser le dictionnaire de résultats
+    extracted_data: Dict[str, List[Any]] = {
+        "words": [],       # List[str] à la rigueur si vous voulez être plus précis
+        "bboxes": [],      # List[Tuple[int, int, int, int]]
+        "confidences": []  # List[int] ou List[float]
+    }
+    
+    # Facteur de mise à l'échelle pour compenser l'agrandissement
+    scale_factor = 3.0
+    
+    for block, block_path in zip(blocks, blocks_paths, strict=False):
+        # Extraire les coordonnées du bloc
+        x, y, w, h = block
+        
+        # Appliquer l'OCR avec Tesseract
+        block_data = pytesseract.image_to_data(
+            block_path, output_type=pytesseract.Output.DICT, config=tesseract_config
+        )
 
-def extract_text_with_tesseract(image_path):
-    """
-    Extraire le texte et les bounding boxes d'une image en utilisant Tesseract OCR
-    """
-    try:
-        # Charger l'image avec PIL
-        img = PILImage.open(image_path)
-        image_height = img.height  # Obtenir la hauteur de l'image pour l'inversion des coordonnées
-        
-        # Utiliser Tesseract pour extraire le texte et les données
-        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-        
-        extracted_data = {
-            "words": [],
-            "bboxes": [],
-            "confidences": []
-        }
-        
         # Parcourir les mots détectés
-        for i in range(len(data['text'])):
+        for j in range(len(block_data['text'])):
             # Ignorer les entrées vides
-            if not data['text'][i].strip():
+            if not block_data['text'][j].strip():
                 continue
-                
-            # Récupérer les coordonnées
-            x = data['left'][i]
-            y = data['top'][i]
-            w = data['width'][i]
-            h = data['height'][i]
             
-            # Créer la bbox au format x1,y1,x2,y2 avec les coordonnées Y inversées
-            # pour correspondre au système de coordonnées de Docling
-            bbox_tuple = (x, image_height - (y + h), x + w, image_height - y)
+            # Récupérer les coordonnées locales au bloc (ajustées pour l'échelle)
+            local_x = int(block_data['left'][j] / scale_factor)
+            local_y = int(block_data['top'][j] / scale_factor)
+            local_w = int(block_data['width'][j] / scale_factor)
+            local_h = int(block_data['height'][j] / scale_factor)
             
-            # Ajouter à nos données
-            extracted_data["words"].append(data['text'][i])
+            # Convertir en coordonnées globales
+            global_x = x + local_x
+            global_y = y + local_y
+            
+            # Créer la bbox au format x1,y1,x2,y2 (SANS inverser les coordonnées Y)
+            bbox_tuple = (
+                global_x, 
+                image_height - (global_y + local_h), 
+                global_x + local_w, 
+                image_height - global_y
+            )
+            
+            # Ajouter aux données
+            extracted_data["words"].append(block_data['text'][j])
             extracted_data["bboxes"].append(bbox_tuple)
-            extracted_data["confidences"].append(data['conf'][i])
-        
-        return extracted_data
+            extracted_data["confidences"].append(block_data['conf'][j])
+    
+    return extracted_data
+
+def process_ocr(image_path):
+    """Traite l'OCR en découpant d'abord l'image en blocs puis en appliquant l'OCR sur chaque bloc."""
+    try:
+        tesseract_config = r'--oem 3 --psm 6 -l fra' # config pour le français et les documents administratifs
+        extracted_data = process_image_with_block_ocr(
+            image_path, 
+            tesseract_config=tesseract_config,
+        )
+        converted_data = convert_nested_numpy_types(extracted_data)
+        return converted_data
     
     except Exception as e:
         print(f"Erreur lors de l'extraction avec Tesseract: {e}")
-        import traceback
-        traceback.print_exc()
-        return {"words": [], "bboxes": [], "confidences": []}
-
-def extract_text_with_docling(image_path):
-    """
-    Extraire le texte et les bounding boxes d'une image en utilisant Docling
-    """
-    try:
-        converter = DocumentConverter()
-        result = converter.convert(image_path)
-        doc = result.document
-        
-        extracted_data = {
-            "words": [],
-            "bboxes": [],
-            "page_numbers": []
-        }
-        
-        for text_item in doc.texts:
-            for prov in text_item.prov:
-                # Récupérer le texte
-                text = text_item.text.strip()
-                if not text:
-                    continue
-                
-                # Récupérer la bounding box
-                bbox = prov.bbox
-                bbox_tuple = bbox.as_tuple()  # x1, y1, x2, y2 format
-                
-                # Ajouter à nos données
-                extracted_data["words"].append(text)
-                extracted_data["bboxes"].append(bbox_tuple)
-                extracted_data["page_numbers"].append(prov.page_no)
-        
-        return extracted_data
-    
-    except Exception as e:
-        print(f"Erreur lors de l'extraction avec Docling: {e}")
-        import traceback
-        traceback.print_exc()
-        return {"words": [], "bboxes": [], "page_numbers": []}
-
-def is_new_bbox(new_bbox, existing_bboxes, overlap_threshold=0.5):
-    """
-    Vérifie si une bounding box est nouvelle (pas suffisamment de chevauchement avec les existantes)
-    """
-    # Extraire les coordonnées
-    x1_new, y1_new, x2_new, y2_new = new_bbox
-    
-    # Calculer l'aire de la nouvelle bbox
-    area_new = (x2_new - x1_new) * (y2_new - y1_new)
-    if area_new <= 0:
-        return False  # Bbox invalide
-    
-    for bbox in existing_bboxes:
-        x1, y1, x2, y2 = bbox
-        
-        # Calculer l'intersection
-        x_left = max(x1_new, x1)
-        y_top = max(y1_new, y1)
-        x_right = min(x2_new, x2)
-        y_bottom = min(y2_new, y2)
-        
-        if x_right <= x_left or y_bottom <= y_top:
-            continue  # Pas de chevauchement avec cette bbox
-        
-        # Calculer l'aire d'intersection
-        intersection = (x_right - x_left) * (y_bottom - y_top)
-        
-        # Calculer le ratio de chevauchement par rapport à la nouvelle bbox
-        overlap_ratio = intersection / area_new
-        
-        if overlap_ratio > overlap_threshold:
-            return False  # Chevauchement significatif, donc pas nouvelle
-    
-    return True  # Aucun chevauchement significatif trouvé, donc nouvelle
-
-def combine_ocr_results(image_path):
-    """
-    Combiner les résultats OCR de EasyOCR, Tesseract et Docling
-    """
-    try:
-        print(f"Extracting text from {image_path} with multiple OCR engines...")
-        
-        # 1. Utiliser EasyOCR en premier (souvent plus précis)
-        easyocr_data = extract_text_with_easyocr(image_path)
-        
-        # 2. Utiliser Tesseract
-        tesseract_data = extract_text_with_tesseract(image_path)
-        
-        # 3. Utiliser Docling 
-        docling_data = extract_text_with_docling(image_path)
-        
-        # 4. Combiner les résultats en gardant EasyOCR comme principale source
-        combined_data = {
-            "words": easyocr_data["words"].copy(),
-            "bboxes": easyocr_data["bboxes"].copy(),
-            "page_numbers": [1] * len(easyocr_data["words"]),
-            "engine": ["easyocr"] * len(easyocr_data["words"])
-        }
-        
-        # 5. Ajouter les résultats de Tesseract qui ne chevauchent pas ceux de EasyOCR
-        for i, (word, bbox) in enumerate(zip(tesseract_data["words"], tesseract_data["bboxes"])):
-            if is_new_bbox(bbox, combined_data["bboxes"], overlap_threshold=0.3):
-                # Vérifier que le mot n'est pas vide ou un simple caractère
-                if len(word.strip()) > 1:
-                    combined_data["words"].append(word)
-                    combined_data["bboxes"].append(bbox)
-                    combined_data["page_numbers"].append(1)
-                    combined_data["engine"].append("tesseract")
-        
-        # 6. Ajouter les résultats de Docling qui ne chevauchent pas ceux déjà présents
-        for i, (word, bbox) in enumerate(zip(docling_data["words"], docling_data["bboxes"])):
-            if is_new_bbox(bbox, combined_data["bboxes"], overlap_threshold=0.3):
-                if len(word.strip()) > 1:
-                    combined_data["words"].append(word)
-                    combined_data["bboxes"].append(bbox)
-                    combined_data["page_numbers"].append(docling_data["page_numbers"][i] if "page_numbers" in docling_data else 1)
-                    combined_data["engine"].append("docling")
-        
-        print(f"Found {len(combined_data['words'])} words total: "
-              f"{len(easyocr_data['words'])} from EasyOCR, "
-              f"{len([e for e in combined_data['engine'] if e == 'tesseract'])} additional from Tesseract, "
-              f"{len([e for e in combined_data['engine'] if e == 'docling'])} additional from Docling")
-        
-        return combined_data
-        
-    except Exception as e:
-        print(f"Error processing OCR: {e}")
-        import traceback
-        traceback.print_exc()
-        return {"words": [], "bboxes": [], "page_numbers": [], "engine": []}
+        return {}
 
 def normalize_bboxes(bboxes, image_size, scale=1000):
-    """
-    Normalise les bounding boxes à l'échelle 0-1000 (format attendu par LayoutLMv3)
+    """Normaliser les bounding boxes à l'échelle 0-1000 (format attendu par LayoutLMv3).
+    
+    Args:
+        bboxes: Liste de bounding boxes au format [x1, y1, x2, y2]
+        image_size: Tuple (width, height) de l'image
+        scale: Facteur d'échelle (1000 par défaut pour LayoutLMv3)
+    
+    Returns:
+        Liste de bounding boxes normalisées à l'échelle 0-1000
     """
     width, height = image_size
     normalized_bboxes = []
@@ -351,7 +497,7 @@ def predict_with_model(image_path):
     """
     try:
         # Extraire le texte et les bounding boxes avec plusieurs OCR
-        ocr_data = combine_ocr_results(image_path)
+        ocr_data = process_ocr(image_path)
         
         if not ocr_data["words"]:
             print("No OCR data detected")

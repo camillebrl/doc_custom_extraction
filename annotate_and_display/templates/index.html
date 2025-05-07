@@ -246,7 +246,7 @@
     <script>
         // Initialisation des labels par défaut - modified to exclude B- and I- prefixes
         // These will be generated automatically
-        const defaultLabels = ["PATIENT.TEL", "PATIENT.ID","PATIENT.NAME","PATIENT.ADRESS","PATIENT.SEX","PATIENT.AGE","DOCTOR.NAME","DOCTOR.ADRESS","DOCTOR.TEL","DOCTOR.ID", "DOCTOR.JOB", "DOCTOR.DIPLOMA", "DATE", "TYPE", "MEDECINE"];
+        const defaultLabels = ["PATIENT.LASTNAME","PATIENT.FISTNAME","PATIENT.ADRESS","PATIENT.SEX","PATIENT.TEL","PATIENT.BIRTHDAY","PATIENT.BORNCITY","PATIENT.INS","PATIENT.IPP","DOCTOR.FIRSTNAME","DOCTOR.LASTNAME","DOCTOR.RPPS","DOCTOR.JOB", "FACILITY.NAME","FACILITY.ADRESS","FACILITY.TEL","ACT.DATE", "ACT.TYPE","DOC.TYPE"];
         let currentLabels = [...defaultLabels];
         let selectedLabel = "O";
         
@@ -466,7 +466,7 @@
                     return fetch('/generate_augmentations', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ image_path: currentImagePath, n_augmentations: 10 })
+                        body: JSON.stringify({ image_path: currentImagePath, n_augmentations: 3 })
                     }).then(augResponse => augResponse.json());
                 } else {
                     throw new Error(data.message || 'Export failed');
