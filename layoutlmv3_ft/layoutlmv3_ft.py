@@ -1,16 +1,31 @@
-import os
+# Copyright 2025 Camille Barboule
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
 import argparse
 import json
-from PIL import Image
+import os
+import random
+from collections import Counter
+
 import numpy as np
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from transformers import LayoutLMv3ForTokenClassification, LayoutLMv3Processor, TrainingArguments, Trainer
-from seqeval.metrics import f1_score, accuracy_score
+from PIL import Image
+from seqeval.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split
-from collections import Counter
-import random
+from transformers import LayoutLMv3ForTokenClassification, LayoutLMv3Processor, Trainer, TrainingArguments
+
 
 def create_label_maps(categories):
     """
@@ -34,8 +49,8 @@ def load_json_data(jsonl_file):
                 continue
             try:
                 item = json.loads(line)
-                if "image_path" in item and not item["image_path"].startswith("../build_data/"):
-                    item["image_path"] = os.path.join("../build_data", item["image_path"])
+                if "image_path" in item and not item["image_path"].startswith("../annotate_and_display/"):
+                    item["image_path"] = os.path.join("../annotate_and_display", item["image_path"])
                 data.append(item)
             except json.JSONDecodeError as e:
                 print(f"Erreur de parsing JSON à la ligne: {e}")
@@ -144,8 +159,8 @@ def compute_metrics(p, id2label):
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tuning LayoutLMv3")
-    parser.add_argument("--annotation_file", type=str, default="../build_data/temp_annot.jsonl")
-    parser.add_argument("--output_dir", type=str, default="./results")
+    parser.add_argument("--annotation_file", type=str, default="../annotate_and_display/temp_annot.jsonl")
+    parser.add_argument("--output_dir", type=str, default="./results_v0")
     parser.add_argument("--model_name", type=str, default="microsoft/layoutlmv3-base")
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=28)

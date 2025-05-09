@@ -1,3 +1,18 @@
+# Copyright 2025 Camille Barboule
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
 import base64
 import io
 import json
@@ -22,7 +37,7 @@ app = Flask(__name__)
 # Configuration
 UPLOAD_FOLDER = 'uploads'
 RESULTS_FOLDER = 'results'
-MODEL_PATH = '../layoutlmv3_ft/results/final_model'
+MODEL_PATH = '../layoutlmv3_ft/results_v0/final_model'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULTS_FOLDER, exist_ok=True)
 
@@ -45,13 +60,19 @@ model.eval()  # Mettre le modèle en mode évaluation
 print("Modèle chargé avec succès!")
 
 # Mapping des couleurs pour les labels
-COLOR_MAP = {
-    "PATIENT": "yellow",
-    "DOCTOR": "blue",
-    "FACILITY": "purple",
-    "ACT": "green",
-    "DOC": "orange"
-}
+PALETTE = plt.get_cmap('tab20').colors  
+COLOR_MAP = {}
+
+def get_color_for_label(label: str) -> str:
+    """
+    Renvoie une couleur hex pour le préfixe du label (avant le '.'),
+    en l'assignant dynamiquement s'il n'existe pas encore.
+    """
+    prefix = label.split('.')[0] if '.' in label else label
+    if prefix not in COLOR_MAP:
+        idx = len(COLOR_MAP) % len(PALETTE)
+        COLOR_MAP[prefix] = matplotlib.colors.to_hex(PALETTE[idx])
+    return COLOR_MAP[prefix]
 
 def convert_nested_numpy_types(obj):
     """Recursively convert numpy types in nested data structures to Python types."""
@@ -748,11 +769,7 @@ def process_image(image_path):
             continue
         
         # Trouver la couleur appropriée pour ce type de label
-        color = "red"  # Couleur par défaut
-        for key, value in COLOR_MAP.items():
-            if label.startswith(key):
-                color = value
-                break
+        color = get_color_for_label(label)
         
         x1, y1, x2, y2 = box
         
@@ -836,7 +853,7 @@ def upload_file():
                 results.append({
                     'label': label,
                     'words': words,
-                    'color': COLOR_MAP.get(label.split('.')[0] if '.' in label else label, 'red')
+                    'color': get_color_for_label(label)
                 })
             
             return jsonify({

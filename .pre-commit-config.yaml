@@ -15,15 +15,6 @@ repos:
   hooks:
     - id: mypy
       name: Check type 
-
-- repo: local
-  hooks:
-    - id: check-commit-message
-      name: Check Commit Message
-      entry: python check_commit_message.py
-      language: system
-      stages: [commit-msg]
-      verbose: true
   
 - repo: https://github.com/zricethezav/gitleaks
   rev: v8.2.0

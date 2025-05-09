@@ -7,7 +7,6 @@ Key Information Extraction (KIE) consiste à détecter et à extraire automatiqu
 - **FUNSD** (Form Understanding in Noisy Scanned Documents) : extraction de paires clé-valeur depuis des formulaires annotés avec positions de tokens et catégories sémantiques.
 - **SROIE** (Scanned Receipt OCR and Information Extraction) : identification et classification des champs clés (nom du magasin, total, TVA, date) sur des reçus de caisse.
 - **CORD** (Complex Receipt Datasets) : version détaillée de reçus permettant l’extraction d’informations plus diversifiées et la reconnaissance de tables.
-- **SOIE** (Scanned Outlines Information Extraction) : tâches d’extraction similaires sur relevés bancaires ou factures plus génériques.
 
 Chaque dataset propose une **tâche de classification** (types de champs) et de **localisation** (boîtes englobantes), ou une **tâche générative** (générer directement le JSON de sortie).
 
@@ -94,3 +93,8 @@ poetry install
 poetry shell # on entre dans l'environnement virtuel temporaire créé par poetry
 ```
 Une fois l'env activé, tu peux lancer les scripts! Tu auras l'endpoint des applications indiquées!
+
+
+## Licence
+
+Ce projet est distribué sous licence Apache 2.0. Voir le fichier [LICENSE](./LICENSE) pour les détails.
